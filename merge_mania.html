@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Merge Mania</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    background: radial-gradient(circle at center, #2b1b3d, #100818 80%);
+    display:flex; justify-content:center; align-items:center;
+    height:100vh; font-family:'Segoe UI', Tahoma, sans-serif;
+    overflow:hidden;
+  }
+  #gameContainer {
+    position:relative;
+    box-shadow: 0 0 70px rgba(255,150,60,0.25);
+    border-radius: 12px;
+    overflow:hidden;
+    border: 3px solid #4a2f6b;
+  }
+  canvas { display:block; background: linear-gradient(180deg,#fff8ec,#ffe9c7); cursor:pointer; }
+  #hud {
+    position:absolute; top:10px; left:10px; right:10px;
+    display:flex; justify-content:space-between;
+    color:#4a2f6b; font-weight:bold; text-shadow: 1px 1px 0 rgba(255,255,255,0.5);
+    pointer-events:none; user-select:none; font-size:16px;
+  }
+  #nextPreview {
+    position:absolute; top:10px; right:10px;
+    display:flex; flex-direction:column; align-items:center;
+    color:#4a2f6b; font-size:12px; pointer-events:none;
+  }
+  #nextCanvas { background:rgba(255,255,255,0.5); border-radius:8px; }
+  #centerMsg {
+    position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+    text-align:center; pointer-events:none; color:#fff; text-shadow: 2px 2px 6px #000;
+  }
+  #centerMsg h1 { font-size:46px; color:#ffb347; letter-spacing:2px; margin-bottom:10px; }
+  #centerMsg p { font-size:15px; color:#f0e0ff; margin-top:6px; max-width:360px; }
+  #startBtn {
+    margin-top:18px; padding:12px 30px; font-size:17px; font-weight:bold;
+    background:linear-gradient(180deg,#ff9d4d,#ff6b35); color:#3d1600; border:none;
+    border-radius:8px; cursor:pointer; pointer-events:auto; box-shadow:0 4px 0 #b34a1a;
+  }
+  #startBtn:active { transform:translateY(2px); box-shadow:0 2px 0 #b34a1a; }
+  #dangerLine {
+    position:absolute; left:0; right:0; height:2px;
+    background: repeating-linear-gradient(90deg, #ff4d4d 0 10px, transparent 10px 20px);
+    pointer-events:none;
+  }
+  #bestScoreTag {
+    position:absolute; bottom:8px; left:10px; font-size:12px; color:#7a5a9a;
+    pointer-events:none; user-select:none;
+  }
+</style>
+</head>
+<body>
+<div id="gameContainer">
+  <canvas id="game" width="480" height="680"></canvas>
+  <div id="dangerLine"></div>
+  <div id="hud">
+    <div id="scoreText">Score: 0</div>
+  </div>
+  <div id="nextPreview">
+    <span>NEXT</span>
+    <canvas id="nextCanvas" width="60" height="60"></canvas>
+  </div>
+  <div id="bestScoreTag">Best: 0</div>
+  <div id="centerMsg">
+    <h1 id="msgTitle">MERGE MANIA</h1>
+    <p>Mouse move karke fruit ko position karo, click karke drop karo.<br>
+    Same fruits touch honge to woh merge ho kar bara fruit banayenge!<br>
+    Red line ke upar fruits jama na hone dena — warna Game Over!</p>
+    <button id="startBtn">Khelna Shuru Karo</button>
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+const nextCanvas = document.getElementById('nextCanvas');
+const nctx = nextCanvas.getContext('2d');
+
+const scoreText = document.getElementById('scoreText');
+const bestScoreTag = document.getElementById('bestScoreTag');
+const centerMsg = document.getElementById('centerMsg');
+const msgTitle = document.getElementById('msgTitle');
+const startBtn = document.getElementById('startBtn');
+const dangerLine = document.getElementById('dangerLine');
+
+const DANGER_Y = 90;
+dangerLine.style.top = DANGER_Y + 'px';
+
+// Fruit types: radius, color, points
+const TYPES = [
+  { r:16, color:'#ff6b6b', name:'Cherry' },
+  { r:22, color:'#ff9f4d', name:'Apricot' },
+  { r:29, color:'#ffd93d', name:'Lemon' },
+  { r:37, color:'#8bd450', name:'Lime' },
+  { r:46, color:'#4dd0e1', name:'Orange' },
+  { r:56, color:'#5c7cfa', name:'Plum' },
+  { r:67, color:'#c084fc', name:'Peach' },
+  { r:79, color:'#f472b6', name:'Apple' },
+  { r:92, color:'#fb923c', name:'Melon' },
+  { r:108,color:'#facc15', name:'Watermelon' }
+];
+
+let fruits = [];
+let score = 0;
+let bestScore = 0;
+let gameRunning = false;
+let animId = null;
+
+let currentType = 0;
+let nextType = 0;
+let dropX = W/2;
+let canDrop = true;
+let dropCooldown = 0;
+
+const GRAVITY = 0.45;
+const WALL_L = 14, WALL_R = W - 14, FLOOR_Y = H - 14;
+const RESTITUTION = 0.18;
+
+function randomLowType() {
+  return Math.floor(Math.random() * 5); // only small fruits drop
+}
+
+function resetGame() {
+  fruits = [];
+  score = 0;
+  currentType = randomLowType();
+  nextType = randomLowType();
+  dropX = W/2;
+  canDrop = true;
+  dropCooldown = 0;
+  updateHUD();
+}
+
+function updateHUD() {
+  scoreText.textContent = 'Score: ' + score;
+  bestScoreTag.textContent = 'Best: ' + bestScore;
+}
+
+function spawnFruit(x, type) {
+  const t = TYPES[type];
+  fruits.push({
+    x, y: 40, vx:0, vy:0,
+    r: t.r, type,
+    settleTimer: 0,
+    justMerged: 8
+  });
+}
+
+function drawFruit(context, x, y, type, scale, alpha) {
+  const t = TYPES[type];
+  const r = t.r * (scale||1);
+  context.save();
+  context.globalAlpha = alpha !== undefined ? alpha : 1;
+  const grad = context.createRadialGradient(x - r*0.3, y - r*0.3, r*0.1, x, y, r);
+  grad.addColorStop(0, shadeColor(t.color, 30));
+  grad.addColorStop(1, t.color);
+  context.fillStyle = grad;
+  context.beginPath();
+  context.arc(x, y, r, 0, Math.PI*2);
+  context.fill();
+  context.strokeStyle = shadeColor(t.color, -25);
+  context.lineWidth = 2;
+  context.stroke();
+  context.restore();
+}
+
+function shadeColor(hex, percent) {
+  let num = parseInt(hex.slice(1),16);
+  let r = (num>>16) + percent;
+  let g = ((num>>8)&0xff) + percent;
+  let b = (num&0xff) + percent;
+  r = Math.max(0,Math.min(255,r));
+  g = Math.max(0,Math.min(255,g));
+  b = Math.max(0,Math.min(255,b));
+  return '#' + (r<<16 | g<<8 | b).toString(16).padStart(6,'0');
+}
+
+function drawNextPreview() {
+  nctx.clearRect(0,0,60,60);
+  drawFruit(nctx, 30, 30, nextType, 0.42);
+}
+
+function update() {
+  if (!gameRunning) return;
+  if (dropCooldown > 0) dropCooldown--;
+
+  // physics
+  for (const f of fruits) {
+    f.vy += GRAVITY;
+    f.x += f.vx;
+    f.y += f.vy;
+    f.vx *= 0.985;
+
+    if (f.x - f.r < WALL_L) { f.x = WALL_L + f.r; f.vx *= -RESTITUTION; }
+    if (f.x + f.r > WALL_R) { f.x = WALL_R - f.r; f.vx *= -RESTITUTION; }
+    if (f.y + f.r > FLOOR_Y) { f.y = FLOOR_Y - f.r; f.vy *= -RESTITUTION; }
+    if (f.justMerged > 0) f.justMerged--;
+  }
+
+  // collisions (multi-pass for stability)
+  for (let pass = 0; pass < 3; pass++) {
+    for (let i = 0; i < fruits.length; i++) {
+      for (let j = i+1; j < fruits.length; j++) {
+        const a = fruits[i], b = fruits[j];
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const dist = Math.hypot(dx, dy);
+        const minDist = a.r + b.r;
+        if (dist < minDist && dist > 0.001) {
+          const overlap = (minDist - dist) / 2;
+          const nx = dx / dist, ny = dy / dist;
+          a.x -= nx * overlap; a.y -= ny * overlap;
+          b.x += nx * overlap; b.y += ny * overlap;
+
+          const relVx = b.vx - a.vx, relVy = b.vy - a.vy;
+          const relDot = relVx*nx + relVy*ny;
+          if (relDot < 0) {
+            const impulse = -relDot * 0.35;
+            a.vx -= nx * impulse; a.vy -= ny * impulse;
+            b.vx += nx * impulse; b.vy += ny * impulse;
+          }
+        }
+      }
+    }
+  }
+
+  // merges (separate pass so we don't mutate array mid double-loop above)
+  outer:
+  for (let i = 0; i < fruits.length; i++) {
+    for (let j = i+1; j < fruits.length; j++) {
+      const a = fruits[i], b = fruits[j];
+      if (a.type !== b.type) continue;
+      if (a.type >= TYPES.length - 1) continue;
+      const dist = Math.hypot(a.x - b.x, a.y - b.y);
+      if (dist < (a.r + b.r) * 0.85) {
+        const newType = a.type + 1;
+        const nx = (a.x + b.x)/2, ny = (a.y + b.y)/2;
+        fruits.splice(j,1);
+        fruits.splice(i,1);
+        spawnFruit(nx, newType);
+        fruits[fruits.length-1].y = ny;
+        fruits[fruits.length-1].vy = -2;
+        score += (newType+1) * 8;
+        updateHUD();
+        break outer;
+      }
+    }
+  }
+
+  // game over check: any settled fruit above danger line for a while
+  let dangerNow = false;
+  for (const f of fruits) {
+    if (f.y - f.r < DANGER_Y && Math.abs(f.vy) < 0.6 && f.justMerged === 0) {
+      f.settleTimer = (f.settleTimer||0) + 1;
+      if (f.settleTimer > 90) dangerNow = true;
+    } else {
+      f.settleTimer = 0;
+    }
+  }
+  if (dangerNow) endGame();
+}
+
+function draw() {
+  ctx.clearRect(0,0,W,H);
+
+  // subtle floor shading
+  ctx.fillStyle = 'rgba(200,150,80,0.08)';
+  ctx.fillRect(0, FLOOR_Y, W, H-FLOOR_Y);
+
+  for (const f of fruits) {
+    const scale = f.justMerged > 0 ? 1 + f.justMerged*0.02 : 1;
+    drawFruit(ctx, f.x, f.y, f.type, scale);
+  }
+
+  // drop preview
+  if (gameRunning && canDrop) {
+    ctx.globalAlpha = 0.55;
+    drawFruit(ctx, dropX, 55, currentType);
+    ctx.globalAlpha = 0.25;
+    ctx.strokeStyle = '#4a2f6b';
+    ctx.setLineDash([4,4]);
+    ctx.beginPath();
+    ctx.moveTo(dropX, 55 + TYPES[currentType].r);
+    ctx.lineTo(dropX, FLOOR_Y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+  }
+}
+
+function loop() {
+  update();
+  draw();
+  drawNextPreview();
+  if (gameRunning) animId = requestAnimationFrame(loop);
+}
+
+function endGame() {
+  gameRunning = false;
+  cancelAnimationFrame(animId);
+  if (score > bestScore) bestScore = score;
+  updateHUD();
+  msgTitle.textContent = 'GAME OVER';
+  document.querySelector('#centerMsg p').innerHTML =
+    `Score: <b>${score}</b>${score>=bestScore ? ' — Naya Best! 🎉' : ''}<br>Dobara try karo!`;
+  startBtn.textContent = 'Dobara Khelo';
+  centerMsg.style.display = 'flex';
+  centerMsg.style.flexDirection = 'column';
+  centerMsg.style.alignItems = 'center';
+}
+
+function startGame() {
+  resetGame();
+  centerMsg.style.display = 'none';
+  gameRunning = true;
+  loop();
+}
+
+startBtn.addEventListener('click', startGame);
+
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  const x = (e.clientX - rect.left) * (W / rect.width);
+  const r = TYPES[currentType].r;
+  dropX = Math.max(WALL_L + r, Math.min(WALL_R - r, x));
+});
+
+canvas.addEventListener('click', () => {
+  if (!gameRunning || !canDrop || dropCooldown > 0) return;
+  spawnFruit(dropX, currentType);
+  currentType = nextType;
+  nextType = randomLowType();
+  dropCooldown = 22;
+});
+
+// touch support
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const x = (e.touches[0].clientX - rect.left) * (W / rect.width);
+  const r = TYPES[currentType].r;
+  dropX = Math.max(WALL_L + r, Math.min(WALL_R - r, x));
+}, { passive:false });
+
+canvas.addEventListener('touchend', () => {
+  if (!gameRunning || dropCooldown > 0) return;
+  spawnFruit(dropX, currentType);
+  currentType = nextType;
+  nextType = randomLowType();
+  dropCooldown = 22;
+});
+
+resetGame();
+draw();
+drawNextPreview();
+</script>
+</body>
+</html>
